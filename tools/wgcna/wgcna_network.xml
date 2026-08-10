@@ -18,8 +18,8 @@ options(stringsAsFactors = FALSE)
 counts_file        <- "$counts_file"
 metadata_file      <- "$metadata_file"
 network_type       <- "$network_type"
-tom_type           <- "$tom_type"
-cor_type           <- "$cor_type"
+tom_type            <- "$tom_type"
+cor_type            <- "$cor_type"
 min_module_size    <- as.integer($min_module_size)
 merge_cut_height   <- as.numeric($merge_cut_height)
 me_cor_threshold <- as.numeric($me_cor_threshold)
@@ -30,8 +30,17 @@ filter_by_variance <- $filter_by_variance
 variance_quantile  <- as.numeric($variance_quantile)
 run_sample_gene_qc <- $run_sample_gene_qc
 
-## Use GALAXY_SLOTS if set by the cluster runner, fall back to 1 otherwise
-n_threads <- as.integer(Sys.getenv("GALAXY_SLOTS", unset = "1"))
+## Use GALAXY_SLOTS if set by the cluster runner, fall back to 1 otherwise.
+## allowWGCNAThreads() hard-requires nThreads >= 2, so a single-core job
+## allocation (GALAXY_SLOTS=1, or unset) must be floored to 2 here rather
+## than passed straight through, otherwise the tool always errors out on
+## jobs scheduled with only 1 CPU core.
+n_threads <- suppressWarnings(as.integer(Sys.getenv("GALAXY_SLOTS", unset = "1")))
+if (is.na(n_threads) || n_threads < 2) {
+    cat("GALAXY_SLOTS reported", Sys.getenv("GALAXY_SLOTS", unset = "1"),
+        "thread(s); allowWGCNAThreads() requires at least 2, so using 2.\n")
+    n_threads <- 2L
+}
 allowWGCNAThreads(nThreads = n_threads)
 
 ## corFnc/adjacency()/TOMsimilarity() expect the *function name* ("cor" or
@@ -805,6 +814,23 @@ cat("Results written to: results/\n")
                 <has_text text="Sample names in the counts matrix columns do not match the sample names in the first column of the metadata file."/>
             </assert_stderr>
         </test>
+
+        <!-- Regression test for the allowWGCNAThreads() fix: a single-slot
+             job allocation must not crash the tool. GALAXY_SLOTS is set to
+             1 to reproduce the reported bug. -->
+        <test expect_num_outputs="2">
+            <env_var name="GALAXY_SLOTS" value="1"/>
+            <param name="counts_file" value="normalized_counts.tsv"/>
+            <param name="metadata_file" value="trait_data.tsv"/>
+            <param name="network_type" value="signed"/>
+            <param name="min_module_size" value="10"/>
+            <param name="trait_columns" value="2"/>
+            <output_collection name="wgcna_plots" type="list" count="11"/>
+            <output_collection name="gene_tables" type="list" count="2"/>
+            <assert_stdout>
+                <has_text text="allowWGCNAThreads() requires at least 2, so using 2"/>
+            </assert_stdout>
+        </test>
     </tests>
     <help><![CDATA[
 **WGCNA Full Pipeline**
@@ -834,6 +860,10 @@ Network type defaults to *Unsigned*. For most RNA-seq co-expression analyses, *S
 - **wgcna_plots** — a collection of every diagnostic and results plot produced by the pipeline.
 - **gene_tables** — a collection of module gene info and hub gene tables, one pair per trait (and per one-hot level for categorical traits), each for the module most correlated with that trait.
 - **R script** (optional) — the exact R script executed for this run, provided when "Save the R script used for this run" is enabled; useful for debugging.
+
+**Notes on thread usage**
+
+The tool uses ``GALAXY_SLOTS`` to size internal WGCNA parallelism. Because ``allowWGCNAThreads()`` requires at least 2 threads, jobs scheduled with only 1 CPU core automatically use 2 threads for WGCNA's internal calculations rather than failing; this does not request extra cores from the scheduler.
     ]]></help>
     <expand macro="wgcna_citations"/>
 </tool>
